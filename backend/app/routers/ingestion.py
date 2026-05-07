@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from app.db import get_db
+from app.db import get_db, AsyncSessionLocal
 from app.models import Lead, RawRecord
 from app.trigger_engine import extract_triggers, score_opportunity
 
@@ -20,6 +20,8 @@ def _build_lead_from_record(record: dict, source: str) -> Optional[dict]:
         str(record.get("trigger_text", "") or ""),
         str(record.get("reason_for_recall", "") or ""),
         str(record.get("title", "") or ""),
+        str(record.get("subject", "") or ""),
+        str(record.get("naics_description", "") or ""),
     ])
     triggers = extract_triggers(text)
     if not triggers:
@@ -33,7 +35,8 @@ def _build_lead_from_record(record: dict, source: str) -> Optional[dict]:
     org_name = (
         record.get("recalling_firm") or record.get("recipient_name")
         or record.get("facility_name") or record.get("company_name")
-        or record.get("department") or "Unknown"
+        or record.get("department") or record.get("awardee_name")
+        or record.get("entity_name") or "Unknown"
     )
     sales_angle_map = {
         "cybersecurity_incident": "Offer cybersecurity incident response or security assessment.",
@@ -47,6 +50,7 @@ def _build_lead_from_record(record: dict, source: str) -> Optional[dict]:
         "compliance_program": "Offer GRC software or compliance consulting.",
     }
     primary_cat = trigger_cats[0] if trigger_cats else ""
+    why_now = f"Recent {source.replace('_', ' ')} activity detected: {', '.join(trigger_cats[:2])}."
     return {
         "org_name": org_name,
         "source": source,
@@ -55,66 +59,82 @@ def _build_lead_from_record(record: dict, source: str) -> Optional[dict]:
         "opportunity_score": score,
         "severity": severity,
         "sales_angle": sales_angle_map.get(primary_cat, "Offer relevant compliance or risk management services."),
-        "trigger_details": triggers[:3],
+        "why_now": why_now,
+        "buyer_segments": ["compliance_vendors", "cybersecurity_vendors", "legal_firms"],
+        "external_id": record.get("id") or record.get("recall_number") or record.get("award_id") or "",
     }
 
 
-async def _run_sec_ingestion():
-    """Background task: ingest SEC EDGAR filings."""
+async def _ingest_and_save(source: str, fetch_fn):
+    """Fetch records from a connector and save leads to DB."""
     try:
-        from app.connectors.sec_edgar import SECEDGARConnector
-        connector = SECEDGARConnector()
-        records = await connector.fetch_recent_filings()
-        logger.info(f"SEC ingestion: fetched {len(records)} records")
+        records = await fetch_fn()
+        logger.info(f"{source}: fetched {len(records)} records")
+        saved = 0
+        async with AsyncSessionLocal() as db:
+            for record in records:
+                try:
+                    lead_data = _build_lead_from_record(record, source)
+                    if not lead_data:
+                        continue
+                    # Check for duplicate by external_id
+                    ext_id = lead_data.get("external_id", "")
+                    if ext_id:
+                        existing = await db.execute(
+                            select(Lead).where(Lead.external_id == ext_id)
+                        )
+                        if existing.scalar_one_or_none():
+                            continue
+                    lead = Lead(
+                        org_name=lead_data["org_name"],
+                        source=lead_data["source"],
+                        trigger_categories=lead_data["trigger_categories"],
+                        forced_spend_categories=lead_data["forced_spend_categories"],
+                        opportunity_score=lead_data["opportunity_score"],
+                        severity=lead_data["severity"],
+                        sales_angle=lead_data["sales_angle"],
+                        why_now=lead_data["why_now"],
+                        buyer_segments=lead_data["buyer_segments"],
+                        external_id=ext_id or None,
+                        created_at=datetime.utcnow(),
+                    )
+                    db.add(lead)
+                    saved += 1
+                except Exception as rec_err:
+                    logger.warning(f"{source} record error: {rec_err}")
+            await db.commit()
+        logger.info(f"{source}: saved {saved} leads")
     except Exception as e:
-        logger.error(f"SEC ingestion error: {e}")
+        logger.error(f"{source} ingestion error: {e}")
 
+
+async def _run_sec_ingestion():
+    from app.connectors.sec_edgar import SECEDGARConnector
+    c = SECEDGARConnector()
+    await _ingest_and_save("sec_edgar", c.fetch_recent_filings)
 
 async def _run_openfda_ingestion():
-    """Background task: ingest openFDA recalls."""
-    try:
-        from app.connectors.openfda import OpenFDAConnector
-        connector = OpenFDAConnector()
-        records = await connector.fetch_recent_recalls()
-        logger.info(f"openFDA ingestion: fetched {len(records)} records")
-    except Exception as e:
-        logger.error(f"openFDA ingestion error: {e}")
-
+    from app.connectors.openfda import OpenFDAConnector
+    c = OpenFDAConnector()
+    await _ingest_and_save("openfda", c.fetch_recent_recalls)
 
 async def _run_epa_ingestion():
-    """Background task: ingest EPA ECHO violations."""
-    try:
-        from app.connectors.epa_echo import EPAECHOConnector
-        connector = EPAECHOConnector()
-        records = await connector.fetch_recent_violations()
-        logger.info(f"EPA ingestion: fetched {len(records)} records")
-    except Exception as e:
-        logger.error(f"EPA ingestion error: {e}")
-
+    from app.connectors.epa_echo import EPAECHOConnector
+    c = EPAECHOConnector()
+    await _ingest_and_save("epa_echo", c.fetch_recent_violations)
 
 async def _run_sam_ingestion():
-    """Background task: ingest SAM.gov opportunities."""
-    try:
-        from app.connectors.sam_gov import SAMGovConnector
-        connector = SAMGovConnector()
-        records = await connector.fetch_opportunities()
-        logger.info(f"SAM.gov ingestion: fetched {len(records)} records")
-    except Exception as e:
-        logger.error(f"SAM.gov ingestion error: {e}")
-
+    from app.connectors.sam_gov import SAMGovConnector
+    c = SAMGovConnector()
+    await _ingest_and_save("sam_gov", c.fetch_opportunities)
 
 async def _run_usaspending_ingestion():
-    """Background task: ingest USAspending awards."""
-    try:
-        from app.connectors.usaspending import USASpendingConnector
-        connector = USASpendingConnector()
-        records = await connector.fetch_recent_awards()
-        logger.info(f"USAspending ingestion: fetched {len(records)} records")
-    except Exception as e:
-        logger.error(f"USAspending ingestion error: {e}")
+    from app.connectors.usaspending import USASpendingConnector
+    c = USASpendingConnector()
+    await _ingest_and_save("usaspending", c.fetch_recent_awards)
 
 
-@router.post("/trigger/{source}")
+@router.post("/run/{source}")
 async def trigger_ingestion(
     source: str,
     background_tasks: BackgroundTasks,
@@ -134,10 +154,21 @@ async def trigger_ingestion(
     return {"status": "started", "source": source, "message": f"Ingestion for {source} started in background"}
 
 
+@router.post("/trigger/{source}")
+async def trigger_ingestion_legacy(
+    source: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """Legacy trigger endpoint."""
+    return await trigger_ingestion(source, background_tasks, db)
+
+
 @router.post("/trigger-all")
 async def trigger_all_ingestion(background_tasks: BackgroundTasks):
     """Trigger ingestion for all data sources."""
-    for fn in [_run_sec_ingestion, _run_openfda_ingestion, _run_epa_ingestion, _run_sam_ingestion, _run_usaspending_ingestion]:
+    for fn in [_run_sec_ingestion, _run_openfda_ingestion, _run_epa_ingestion,
+               _run_sam_ingestion, _run_usaspending_ingestion]:
         background_tasks.add_task(fn)
     return {"status": "started", "message": "All ingestion tasks started in background"}
 
@@ -146,9 +177,10 @@ async def trigger_all_ingestion(background_tasks: BackgroundTasks):
 async def ingestion_status(db: AsyncSession = Depends(get_db)):
     """Get ingestion run status."""
     try:
-        result = await db.execute(select(RawRecord).limit(1))
-        count_result = await db.execute(select(RawRecord))
-        raw_records = count_result.scalars().all()
-        return {"status": "ok", "raw_records_count": len(raw_records)}
+        result = await db.execute(select(Lead))
+        leads = result.scalars().all()
+        raw_result = await db.execute(select(RawRecord))
+        raw_records = raw_result.scalars().all()
+        return {"status": "ok", "leads_count": len(leads), "raw_records_count": len(raw_records)}
     except Exception as e:
         return {"status": "error", "message": str(e)}
