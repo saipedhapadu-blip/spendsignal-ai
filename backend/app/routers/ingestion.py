@@ -3,22 +3,18 @@ import logging
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from app.db import get_db
 from app.models import Lead, RawRecord
 from app.trigger_engine import extract_triggers, score_opportunity
-from app.connectors.sec_edgar import SECEdgarConnector
-from app.connectors.openfda import OpenFDAConnector
-from app.connectors.sam_gov import SAMGovConnector
-from app.connectors.usaspending import USASpendingConnector
-from app.connectors.epa_echo import EPAECHOConnector
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/ingestion", tags=["ingestion"])
+router = APIRouter()
 
 
-def _build_lead_from_record(record: dict, source: str, db: Session) -> Optional[Lead]:
-    """Build and save a Lead from a normalized record."""
+def _build_lead_from_record(record: dict, source: str) -> Optional[dict]:
+    """Build a lead dict from a normalized record."""
     text = " ".join([
         str(record.get("description", "") or ""),
         str(record.get("trigger_text", "") or ""),
@@ -28,23 +24,17 @@ def _build_lead_from_record(record: dict, source: str, db: Session) -> Optional[
     triggers = extract_triggers(text)
     if not triggers:
         return None
-
     score = score_opportunity(triggers, source)
     if score < 20:
         return None
-
     categories = list({c for t in triggers for c in t.get("forced_spend_categories", [])})
     trigger_cats = list({t["category"] for t in triggers})
     severity = max(t.get("severity", 0) for t in triggers)
-
-    # Determine org name
     org_name = (
         record.get("recalling_firm") or record.get("recipient_name")
         or record.get("facility_name") or record.get("company_name")
         or record.get("department") or "Unknown"
     )
-
-    # Sales angle and why-now mapping
     sales_angle_map = {
         "cybersecurity_incident": "Offer cybersecurity incident response or security assessment.",
         "material_weakness": "Offer internal audit, SOX compliance, or GRC software.",
@@ -54,102 +44,111 @@ def _build_lead_from_record(record: dict, source: str, db: Session) -> Optional[
         "hipaa_privacy": "Offer HIPAA consulting or healthcare privacy software.",
         "osha_safety": "Offer safety consulting or EHS management software.",
         "litigation": "Offer eDiscovery or legal process management services.",
-        "compliance_program": "Offer GRC software or compliance program consulting.",
+        "compliance_program": "Offer GRC software or compliance consulting.",
     }
     primary_cat = trigger_cats[0] if trigger_cats else ""
-    sales_angle = sales_angle_map.get(primary_cat, "Offer compliance or risk management solutions.")
-    why_now = f"Recent {source.replace('_', ' ')} record indicates {primary_cat.replace('_', ' ')} issue."
-
-    lead = Lead(
-        org_name=org_name,
-        source=source,
-        external_id=record.get("external_id"),
-        trigger_categories=trigger_cats,
-        trigger_text=text[:2000],
-        forced_spend_categories=categories,
-        opportunity_score=score,
-        severity=severity,
-        sales_angle=sales_angle,
-        why_now=why_now,
-        buyer_segments=categories[:3],
-        source_url=record.get("ui_link") or record.get("source_url"),
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
-    )
-    db.add(lead)
-    return lead
+    return {
+        "org_name": org_name,
+        "source": source,
+        "trigger_categories": trigger_cats,
+        "forced_spend_categories": categories,
+        "opportunity_score": score,
+        "severity": severity,
+        "sales_angle": sales_angle_map.get(primary_cat, "Offer relevant compliance or risk management services."),
+        "trigger_details": triggers[:3],
+    }
 
 
-def _run_ingestion(source: str, db: Session):
-    """Background ingestion job for a given source."""
+async def _run_sec_ingestion():
+    """Background task: ingest SEC EDGAR filings."""
     try:
-        if source == "sec_edgar":
-            connector = SECEdgarConnector()
-            records = connector.ingest_recent_filings()
-        elif source == "openfda":
-            connector = OpenFDAConnector()
-            records = connector.ingest_all()
-        elif source == "sam_gov":
-            connector = SAMGovConnector()
-            records = connector.ingest_all()
-        elif source == "usaspending":
-            connector = USASpendingConnector()
-            records = connector.ingest_all()
-        elif source == "epa_echo":
-            connector = EPAECHOConnector()
-            records = connector.ingest_all()
-        else:
-            logger.error(f"Unknown source: {source}")
-            return
-
-        leads_created = 0
-        for record in records:
-            try:
-                raw = RawRecord(
-                    source=source,
-                    external_id=record.get("external_id"),
-                    raw_data=record,
-                    ingested_at=datetime.utcnow(),
-                )
-                db.add(raw)
-                lead = _build_lead_from_record(record, source, db)
-                if lead:
-                    leads_created += 1
-            except Exception as e:
-                logger.error(f"Error processing record from {source}: {e}")
-                continue
-
-        db.commit()
-        logger.info(f"Ingestion complete: {source} - {len(records)} records, {leads_created} leads")
+        from app.connectors.sec_edgar import SECEDGARConnector
+        connector = SECEDGARConnector()
+        records = await connector.fetch_recent_filings()
+        logger.info(f"SEC ingestion: fetched {len(records)} records")
     except Exception as e:
-        db.rollback()
-        logger.error(f"Ingestion failed for {source}: {e}")
+        logger.error(f"SEC ingestion error: {e}")
 
 
-@router.post("/run/{source}")
-def trigger_ingestion(
+async def _run_openfda_ingestion():
+    """Background task: ingest openFDA recalls."""
+    try:
+        from app.connectors.openfda import OpenFDAConnector
+        connector = OpenFDAConnector()
+        records = await connector.fetch_recent_recalls()
+        logger.info(f"openFDA ingestion: fetched {len(records)} records")
+    except Exception as e:
+        logger.error(f"openFDA ingestion error: {e}")
+
+
+async def _run_epa_ingestion():
+    """Background task: ingest EPA ECHO violations."""
+    try:
+        from app.connectors.epa_echo import EPAECHOConnector
+        connector = EPAECHOConnector()
+        records = await connector.fetch_recent_violations()
+        logger.info(f"EPA ingestion: fetched {len(records)} records")
+    except Exception as e:
+        logger.error(f"EPA ingestion error: {e}")
+
+
+async def _run_sam_ingestion():
+    """Background task: ingest SAM.gov opportunities."""
+    try:
+        from app.connectors.sam_gov import SAMGovConnector
+        connector = SAMGovConnector()
+        records = await connector.fetch_opportunities()
+        logger.info(f"SAM.gov ingestion: fetched {len(records)} records")
+    except Exception as e:
+        logger.error(f"SAM.gov ingestion error: {e}")
+
+
+async def _run_usaspending_ingestion():
+    """Background task: ingest USAspending awards."""
+    try:
+        from app.connectors.usaspending import USASpendingConnector
+        connector = USASpendingConnector()
+        records = await connector.fetch_recent_awards()
+        logger.info(f"USAspending ingestion: fetched {len(records)} records")
+    except Exception as e:
+        logger.error(f"USAspending ingestion error: {e}")
+
+
+@router.post("/trigger/{source}")
+async def trigger_ingestion(
     source: str,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Trigger ingestion for a specific data source."""
-    valid_sources = ["sec_edgar", "openfda", "sam_gov", "usaspending", "epa_echo"]
-    if source not in valid_sources:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid source. Valid: {valid_sources}"
-        )
-    background_tasks.add_task(_run_ingestion, source, db)
-    return {"status": "started", "source": source}
+    """Manually trigger ingestion for a data source."""
+    source_map = {
+        "sec_edgar": _run_sec_ingestion,
+        "openfda": _run_openfda_ingestion,
+        "epa_echo": _run_epa_ingestion,
+        "sam_gov": _run_sam_ingestion,
+        "usaspending": _run_usaspending_ingestion,
+    }
+    if source not in source_map:
+        raise HTTPException(status_code=400, detail=f"Unknown source: {source}. Valid: {list(source_map.keys())}")
+    background_tasks.add_task(source_map[source])
+    return {"status": "started", "source": source, "message": f"Ingestion for {source} started in background"}
 
 
-@router.post("/run/all")
-def trigger_all_ingestion(
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-):
+@router.post("/trigger-all")
+async def trigger_all_ingestion(background_tasks: BackgroundTasks):
     """Trigger ingestion for all data sources."""
-    sources = ["sec_edgar", "openfda", "sam_gov", "usaspending", "epa_echo"]
-    for source in sources:
-        background_tasks.add_task(_run_ingestion, source, db)
-    return {"status": "started", "sources": sources}
+    for fn in [_run_sec_ingestion, _run_openfda_ingestion, _run_epa_ingestion, _run_sam_ingestion, _run_usaspending_ingestion]:
+        background_tasks.add_task(fn)
+    return {"status": "started", "message": "All ingestion tasks started in background"}
+
+
+@router.get("/status")
+async def ingestion_status(db: AsyncSession = Depends(get_db)):
+    """Get ingestion run status."""
+    try:
+        result = await db.execute(select(RawRecord).limit(1))
+        count_result = await db.execute(select(RawRecord))
+        raw_records = count_result.scalars().all()
+        return {"status": "ok", "raw_records_count": len(raw_records)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
