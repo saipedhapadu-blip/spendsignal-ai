@@ -27,79 +27,60 @@ interface Summary {
 
 function ScoreBadge({ score }: { score: number }) {
   const num = Number(score) || 0;
-  const color = num >= 70 ? 'bg-red-500' : num >= 40 ? 'bg-yellow-500' : 'bg-blue-400';
-  return (
-    <span className={`inline-block ${color} text-white text-xs font-bold px-2 py-0.5 rounded-full`}>
-      {num}
-    </span>
-  );
+  if (num >= 70) return <span style={{background:'#ef4444',color:'#fff',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'999px'}}>{num}</span>;
+  if (num >= 40) return <span style={{background:'#f59e0b',color:'#fff',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'999px'}}>{num}</span>;
+  return <span style={{background:'#60a5fa',color:'#fff',fontSize:'11px',fontWeight:700,padding:'2px 8px',borderRadius:'999px'}}>{num}</span>;
 }
 
-function Chip({ label, color }: { label: string; color: string }) {
-  return (
-    <span className={`inline-block ${color} text-xs px-2 py-0.5 rounded mr-1 mb-1`}>
-      {label.replace(/_/g, ' ')}
-    </span>
-  );
+function Tag({ label, type }: { label: string; type: 'trigger' | 'spend' | 'buyer' }) {
+  const styles: Record<string, React.CSSProperties> = {
+    trigger: {background:'#fee2e2',color:'#b91c1c',fontSize:'11px',padding:'2px 8px',borderRadius:'4px',display:'inline-block',marginRight:'4px',marginBottom:'4px'},
+    spend:   {background:'#e0e7ff',color:'#3730a3',fontSize:'11px',padding:'2px 8px',borderRadius:'4px',display:'inline-block',marginRight:'4px',marginBottom:'4px'},
+    buyer:   {background:'#dcfce7',color:'#166534',fontSize:'11px',padding:'2px 8px',borderRadius:'4px',display:'inline-block',marginRight:'4px',marginBottom:'4px'},
+  };
+  return <span style={styles[type]}>{label.replace(/_/g,' ')}</span>;
 }
 
 function LeadCard({ lead }: { lead: Lead }) {
-  const [expanded, setExpanded] = useState(false);
+  const [open, setOpen] = useState(false);
   const triggers = Array.isArray(lead.trigger_categories) ? lead.trigger_categories : [];
   const spend = Array.isArray(lead.forced_spend_categories) ? lead.forced_spend_categories : [];
   const buyers = Array.isArray(lead.buyer_segments) ? lead.buyer_segments : [];
   const score = Number(lead.opportunity_score) || 0;
   return (
-    <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow mb-3">
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex-1 min-w-0">
-          <h3 className="font-semibold text-gray-900 text-sm truncate">{lead.org_name || 'Unknown'}</h3>
-          <div className="flex items-center gap-2 mt-1">
-            <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">
-              {(lead.source || '').replace(/_/g, ' ')}
-            </span>
-            {lead.external_id && (
-              <span className="text-xs text-gray-400 truncate max-w-xs">{lead.external_id}</span>
-            )}
+    <div style={{background:'#fff',border:'1px solid #e5e7eb',borderRadius:'12px',padding:'16px',marginBottom:'12px',boxShadow:'0 1px 3px rgba(0,0,0,0.07)'}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:'8px'}}>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontWeight:600,fontSize:'14px',color:'#111827',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{lead.org_name || 'Unknown'}</div>
+          <div style={{display:'flex',gap:'8px',marginTop:'4px',alignItems:'center'}}>
+            <span style={{background:'#f3f4f6',color:'#4b5563',fontSize:'11px',padding:'2px 8px',borderRadius:'4px'}}>{(lead.source||'').replace(/_/g,' ')}</span>
+            {lead.external_id && <span style={{fontSize:'10px',color:'#9ca3af',overflow:'hidden',textOverflow:'ellipsis',maxWidth:'200px'}}>{lead.external_id}</span>}
           </div>
         </div>
         <ScoreBadge score={score} />
       </div>
       {triggers.length > 0 && (
-        <div className="mt-2">
-          <p className="text-xs text-gray-500 font-medium mb-1">Triggers</p>
-          <div className="flex flex-wrap">
-            {triggers.map((t, i) => <Chip key={i} label={t} color="bg-red-100 text-red-700" />)}
-          </div>
+        <div style={{marginTop:'10px'}}>
+          <div style={{fontSize:'11px',color:'#6b7280',fontWeight:500,marginBottom:'4px'}}>Triggers</div>
+          <div>{triggers.map((t,i) => <Tag key={i} label={t} type="trigger" />)}</div>
         </div>
       )}
-      {spend.slice(0, 3).length > 0 && (
-        <div className="mt-1">
-          <p className="text-xs text-gray-500 font-medium mb-1">Spend Categories</p>
-          <div className="flex flex-wrap">
-            {spend.slice(0, 5).map((s, i) => <Chip key={i} label={s} color="bg-indigo-100 text-indigo-700" />)}
-          </div>
+      {spend.length > 0 && (
+        <div style={{marginTop:'8px'}}>
+          <div style={{fontSize:'11px',color:'#6b7280',fontWeight:500,marginBottom:'4px'}}>Spend Categories</div>
+          <div>{spend.slice(0,5).map((s,i) => <Tag key={i} label={s} type="spend" />)}</div>
         </div>
       )}
-      {lead.why_now && (
-        <p className="mt-2 text-xs text-gray-600"><span className="font-medium">Why now:</span> {lead.why_now}</p>
-      )}
-      {lead.sales_angle && (
-        <p className="mt-1 text-xs text-gray-600"><span className="font-medium">Sales angle:</span> {lead.sales_angle}</p>
-      )}
-      {buyers.length > 0 && expanded && (
-        <div className="mt-2">
-          <p className="text-xs text-gray-500 font-medium mb-1">Buyer Segments</p>
-          <div className="flex flex-wrap">
-            {buyers.map((b, i) => <Chip key={i} label={b} color="bg-green-100 text-green-700" />)}
-          </div>
+      {lead.why_now && <p style={{marginTop:'8px',fontSize:'12px',color:'#374151'}}><strong>Why now:</strong> {lead.why_now}</p>}
+      {lead.sales_angle && <p style={{marginTop:'4px',fontSize:'12px',color:'#374151'}}><strong>Sales angle:</strong> {lead.sales_angle}</p>}
+      {open && buyers.length > 0 && (
+        <div style={{marginTop:'8px'}}>
+          <div style={{fontSize:'11px',color:'#6b7280',fontWeight:500,marginBottom:'4px'}}>Buyer Segments</div>
+          <div>{buyers.map((b,i) => <Tag key={i} label={b} type="buyer" />)}</div>
         </div>
       )}
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="mt-2 text-xs text-blue-500 hover:text-blue-700"
-      >
-        {expanded ? 'Show less' : 'Show more'}
+      <button onClick={() => setOpen(!open)} style={{marginTop:'8px',fontSize:'11px',color:'#6366f1',background:'none',border:'none',cursor:'pointer',padding:0}}>
+        {open ? 'Show less' : 'Show more'}
       </button>
     </div>
   );
@@ -128,7 +109,6 @@ export default function Home() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const raw: Lead[] = data.leads || [];
-      // Deduplicate by external_id (prefer last seen) or by id
       const seen = new Map<string, Lead>();
       for (const lead of raw) {
         const key = lead.external_id || lead.id;
@@ -137,7 +117,7 @@ export default function Home() {
       setLeads(Array.from(seen.values()));
       setTotal(data.total || 0);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to fetch leads');
+      setError(e instanceof Error ? e.message : 'Failed to load');
     } finally {
       setLoading(false);
     }
@@ -146,8 +126,7 @@ export default function Home() {
   const fetchSummary = useCallback(async () => {
     try {
       const res = await fetch(`${API}/api/leads/summary`);
-      if (!res.ok) return;
-      setSummary(await res.json());
+      if (res.ok) setSummary(await res.json());
     } catch {}
   }, []);
 
@@ -155,100 +134,61 @@ export default function Home() {
 
   const filtered = leads.filter(l => {
     const q = search.toLowerCase();
-    const matchSearch = !q ||
-      (l.org_name || '').toLowerCase().includes(q) ||
-      (l.why_now || '').toLowerCase().includes(q) ||
-      (l.sales_angle || '').toLowerCase().includes(q);
-    const score = Number(l.opportunity_score) || 0;
-    const matchScore =
-      scoreFilter === 'all' ? true :
-      scoreFilter === 'high' ? score >= 70 :
-      scoreFilter === 'medium' ? score >= 40 && score < 70 :
-      score < 40;
-    return matchSearch && matchScore;
+    const matchQ = !q || (l.org_name||'').toLowerCase().includes(q) || (l.why_now||'').toLowerCase().includes(q);
+    const s = Number(l.opportunity_score)||0;
+    const matchS = scoreFilter==='all' ? true : scoreFilter==='high' ? s>=70 : scoreFilter==='medium' ? s>=40&&s<70 : s<40;
+    return matchQ && matchS;
   });
 
   const triggerIngest = async (src: string) => {
-    setIngesting(true);
-    setIngestMsg('');
+    setIngesting(true); setIngestMsg('');
     try {
-      const res = await fetch(`${API}/api/ingestion/trigger/${src}`, { method: 'POST' });
-      const data = await res.json();
-      setIngestMsg(data.message || JSON.stringify(data));
-      setTimeout(() => { fetchLeads(); fetchSummary(); }, 5000);
+      const res = await fetch(`${API}/api/ingestion/trigger/${src}`, { method:'POST' });
+      const d = await res.json();
+      setIngestMsg(d.message || 'Started');
+      setTimeout(() => { fetchLeads(); fetchSummary(); }, 8000);
     } catch (e: unknown) {
       setIngestMsg(e instanceof Error ? e.message : 'Error');
-    } finally {
-      setIngesting(false);
-    }
+    } finally { setIngesting(false); }
   };
 
+  const hdr: React.CSSProperties = {background:'#fff',borderBottom:'1px solid #e5e7eb',padding:'12px 24px',display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'8px',position:'sticky',top:0,zIndex:10};
+  const btn: React.CSSProperties = {fontSize:'12px',background:'#4f46e5',color:'#fff',border:'none',padding:'6px 14px',borderRadius:'6px',cursor:'pointer',opacity:ingesting?0.5:1};
+  const card: React.CSSProperties = {background:'#fff',border:'1px solid #e5e7eb',borderRadius:'12px',padding:'16px'};
+  const inp: React.CSSProperties = {border:'1px solid #d1d5db',borderRadius:'8px',padding:'8px 12px',fontSize:'13px',flex:1,minWidth:'180px',outline:'none'};
+  const sel: React.CSSProperties = {border:'1px solid #d1d5db',borderRadius:'8px',padding:'8px 12px',fontSize:'13px',outline:'none'};
+  const pgbtn: React.CSSProperties = {fontSize:'12px',border:'1px solid #d1d5db',padding:'4px 12px',borderRadius:'6px',background:'#fff',cursor:'pointer'};
+
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div>
-            <h1 className="text-lg font-bold text-gray-900">SpendSignal AI</h1>
-            <p className="text-xs text-gray-500">Regulatory Forced-Spend Intelligence</p>
-          </div>
-          <div className="flex gap-2 flex-wrap">
-            {['sec edgar', 'openfda', 'sam gov', 'epa echo', 'usaspending'].map((s, i) => {
-              const src = ['sec_edgar','openfda','sam_gov','epa_echo','usaspending'][i];
-              return (
-                <button
-                  key={src}
-                  onClick={() => triggerIngest(src)}
-                  disabled={ingesting}
-                  className="text-xs bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded disabled:opacity-50"
-                >
-                  Ingest {s}
-                </button>
-              );
-            })}
-          </div>
+    <div style={{minHeight:'100vh',background:'#f9fafb',fontFamily:'system-ui,sans-serif'}}>
+      <div style={hdr}>
+        <div>
+          <div style={{fontWeight:700,fontSize:'18px',color:'#111827'}}>SpendSignal AI</div>
+          <div style={{fontSize:'12px',color:'#6b7280'}}>Regulatory Forced-Spend Intelligence</div>
         </div>
-        {ingestMsg && (
-          <div className="max-w-7xl mx-auto px-4 pb-2 text-xs text-green-700">{ingestMsg}</div>
-        )}
-      </header>
+        <div style={{display:'flex',gap:'8px',flexWrap:'wrap'}}>
+          {['sec_edgar','openfda','sam_gov','epa_echo','usaspending'].map(s => (
+            <button key={s} style={btn} disabled={ingesting} onClick={() => triggerIngest(s)}>
+              Ingest {s.replace(/_/g,' ')}
+            </button>
+          ))}
+        </div>
+      </div>
+      {ingestMsg && <div style={{background:'#ecfdf5',color:'#065f46',padding:'8px 24px',fontSize:'12px'}}>{ingestMsg}</div>}
 
-      <main className="max-w-7xl mx-auto px-4 py-6">
+      <div style={{maxWidth:'1200px',margin:'0 auto',padding:'24px 16px'}}>
         {summary && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-            <div className="bg-white rounded-xl border border-gray-200 p-4">
-              <p className="text-2xl font-bold text-gray-900">{summary.total_leads.toLocaleString()}</p>
-              <p className="text-xs text-gray-500 mt-1">Total Leads</p>
-            </div>
-            <div className="bg-white rounded-xl border border-gray-200 p-4">
-              <p className="text-2xl font-bold text-red-600">{summary.high_priority_leads.toLocaleString()}</p>
-              <p className="text-xs text-gray-500 mt-1">High Priority</p>
-            </div>
-            <div className="bg-white rounded-xl border border-gray-200 p-4">
-              <p className="text-2xl font-bold text-gray-900">{Math.round(summary.avg_opportunity_score)}</p>
-              <p className="text-xs text-gray-500 mt-1">Avg Score</p>
-            </div>
-            <div className="bg-white rounded-xl border border-gray-200 p-4">
-              <p className="text-xs font-medium text-gray-700 mb-1">By Source</p>
-              {Object.entries(summary.by_source).map(([k, v]) => (
-                <p key={k} className="text-xs text-gray-600">{k.replace(/_/g, ' ')}: <span className="font-semibold">{v}</span></p>
-              ))}
-            </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:'16px',marginBottom:'24px'}}>
+            <div style={card}><div style={{fontSize:'28px',fontWeight:700,color:'#111827'}}>{summary.total_leads.toLocaleString()}</div><div style={{fontSize:'12px',color:'#6b7280',marginTop:'4px'}}>Total Leads</div></div>
+            <div style={card}><div style={{fontSize:'28px',fontWeight:700,color:'#dc2626'}}>{summary.high_priority_leads.toLocaleString()}</div><div style={{fontSize:'12px',color:'#6b7280',marginTop:'4px'}}>High Priority</div></div>
+            <div style={card}><div style={{fontSize:'28px',fontWeight:700,color:'#111827'}}>{Math.round(summary.avg_opportunity_score)}</div><div style={{fontSize:'12px',color:'#6b7280',marginTop:'4px'}}>Avg Score</div></div>
+            <div style={card}><div style={{fontSize:'12px',fontWeight:600,color:'#374151',marginBottom:'6px'}}>By Source</div>{Object.entries(summary.by_source).map(([k,v])=><div key={k} style={{fontSize:'12px',color:'#6b7280'}}>{k.replace(/_/g,' ')}: <strong>{v}</strong></div>)}</div>
           </div>
         )}
 
-        <div className="flex flex-wrap gap-3 mb-4">
-          <input
-            type="text"
-            placeholder="Search leads..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm flex-1 min-w-48 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-          />
-          <select
-            value={source}
-            onChange={e => { setSource(e.target.value); setPage(0); }}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
-          >
+        <div style={{display:'flex',gap:'12px',marginBottom:'16px',flexWrap:'wrap'}}>
+          <input style={inp} placeholder="Search leads..." value={search} onChange={e=>setSearch(e.target.value)} />
+          <select style={sel} value={source} onChange={e=>{setSource(e.target.value);setPage(0);}}>
             <option value="all">All Sources</option>
             <option value="sec_edgar">SEC Edgar</option>
             <option value="openfda">OpenFDA</option>
@@ -256,11 +196,7 @@ export default function Home() {
             <option value="epa_echo">EPA Echo</option>
             <option value="usaspending">USAspending</option>
           </select>
-          <select
-            value={scoreFilter}
-            onChange={e => setScoreFilter(e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
-          >
+          <select style={sel} value={scoreFilter} onChange={e=>setScoreFilter(e.target.value)}>
             <option value="all">All Scores</option>
             <option value="high">High (70+)</option>
             <option value="medium">Medium (40-69)</option>
@@ -268,34 +204,22 @@ export default function Home() {
           </select>
         </div>
 
-        <div className="flex items-center justify-between mb-3">
-          <p className="text-sm text-gray-600">
-            Showing <span className="font-semibold">{filtered.length}</span> of <span className="font-semibold">{total.toLocaleString()}</span> leads
-          </p>
-          <div className="flex gap-2">
-            <button
-              onClick={() => setPage(p => Math.max(0, p - 1))}
-              disabled={page === 0}
-              className="text-xs px-3 py-1 border rounded disabled:opacity-40 hover:bg-gray-100"
-            >Prev</button>
-            <span className="text-xs py-1 px-2">Page {page + 1}</span>
-            <button
-              onClick={() => setPage(p => p + 1)}
-              disabled={(page + 1) * LIMIT >= total}
-              className="text-xs px-3 py-1 border rounded disabled:opacity-40 hover:bg-gray-100"
-            >Next</button>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'12px'}}>
+          <span style={{fontSize:'13px',color:'#6b7280'}}>Showing <strong>{filtered.length}</strong> of <strong>{total.toLocaleString()}</strong> leads</span>
+          <div style={{display:'flex',gap:'8px',alignItems:'center'}}>
+            <button style={pgbtn} disabled={page===0} onClick={()=>setPage(p=>Math.max(0,p-1))}>Prev</button>
+            <span style={{fontSize:'12px',color:'#374151'}}>Page {page+1}</span>
+            <button style={pgbtn} disabled={(page+1)*LIMIT>=total} onClick={()=>setPage(p=>p+1)}>Next</button>
           </div>
         </div>
 
-        {loading && <p className="text-center text-gray-500 py-12">Loading leads...</p>}
-        {error && <p className="text-center text-red-500 py-6">{error}</p>}
-        {!loading && !error && filtered.length === 0 && (
-          <p className="text-center text-gray-400 py-12">No leads found. Try ingesting data above.</p>
-        )}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-0">
+        {loading && <div style={{textAlign:'center',padding:'48px',color:'#6b7280'}}>Loading leads...</div>}
+        {error && <div style={{textAlign:'center',padding:'24px',color:'#dc2626'}}>{error}</div>}
+        {!loading && !error && filtered.length===0 && <div style={{textAlign:'center',padding:'48px',color:'#9ca3af'}}>No leads found.</div>}
+        <div style={{columns:'1',gap:'12px'}}>
           {filtered.map(lead => <LeadCard key={lead.id} lead={lead} />)}
         </div>
-      </main>
+      </div>
     </div>
   );
 }
