@@ -222,7 +222,7 @@ async def _run_epa_ingestion() -> dict:
         from app.connectors.epa_echo import EPAECHOConnector
         logger.info("EPA ECHO: starting...")
         connector = EPAECHOConnector()
-        records = await asyncio.to_thread(connector.ingest_all, 50)
+                    records = await asyncio.to_thread(lambda: connector.ingest_all(limit_per_state=50))
         logger.info(f"EPA ECHO: fetched {len(records)} records")
         stats = await _save_leads(records, "epa_echo")
         logger.info(f"EPA ECHO: done, stats={stats}")
