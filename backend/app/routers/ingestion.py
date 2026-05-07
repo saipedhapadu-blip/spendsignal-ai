@@ -35,7 +35,6 @@ def _build_lead_from_record(record: dict, source: str) -> Optional[dict]:
         str(metadata.get("form_type", "") or ""),
     ]
     text = " ".join(p for p in parts if p.strip())
-
     triggers = extract_triggers(text) if text.strip() else []
 
     # Also use pre-classified trigger categories from connector metadata
@@ -63,19 +62,28 @@ def _build_lead_from_record(record: dict, source: str) -> Optional[dict]:
         if kw:
             triggers = [{"category": "SEC_REGULATORY", "severity": 5, "keywords": kw[:3], "method": "connector"}]
 
+    # Last resort: if we still have no triggers but have any text content, create a generic trigger
+    if not triggers and (text.strip() or metadata):
+        source_map = {
+            "openfda": ("FDA_RECALL", 5),
+            "epa_echo": ("EPA_VIOLATION", 5),
+            "sec_edgar": ("SEC_REGULATORY", 4),
+        }
+        cat, sev = source_map.get(source, ("REGULATORY", 3))
+        triggers = [{"category": cat, "severity": sev, "keywords": [], "method": "fallback"}]
+
     if not triggers:
         return None
 
     score = score_opportunity(triggers, source)
-    if score < 10:  # lowered threshold
+    if score < 5:  # very low threshold - nearly all records pass
         return None
 
     trigger_cats = list({t.get("category") for t in triggers if t.get("category")})
     severity_vals = [t.get("severity", 0) for t in triggers]
     max_sev = max(severity_vals) if severity_vals else 0
-    severity_map = {0: "low", 1: "low", 2: "low", 3: "medium", 4: "medium",
-                    5: "medium", 6: "high", 7: "high", 8: "critical",
-                    9: "critical", 10: "critical"}
+    severity_map = {0: "low", 1: "low", 2: "low", 3: "medium", 4: "medium", 5: "medium",
+                    6: "high", 7: "high", 8: "critical", 9: "critical", 10: "critical"}
     severity = severity_map.get(min(max_sev, 10), "medium")
 
     # Org name from multiple possible fields
@@ -101,6 +109,7 @@ def _build_lead_from_record(record: dict, source: str) -> Optional[dict]:
         "SEC_REGULATORY": ["Regulatory Compliance", "Legal", "Audit"],
         "SEC_MATERIAL_WEAKNESS": ["Internal Controls", "Audit", "GRC Software"],
         "SEC_LITIGATION": ["Legal Services", "Risk Management"],
+        "REGULATORY": ["Regulatory Compliance", "Risk Management"],
         "cybersecurity_incident": ["Cybersecurity", "Incident Response"],
         "material_weakness": ["Internal Controls", "Audit", "GRC Software"],
         "regulatory_investigation": ["Regulatory Compliance", "Legal"],
@@ -146,18 +155,19 @@ def _build_lead_from_record(record: dict, source: str) -> Optional[dict]:
     }
 
 
-async def _save_leads(records: List[dict], source: str):
-    """Save leads to database."""
+async def _save_leads(records: List[dict], source: str) -> dict:
+    """Save leads to database. Returns stats dict."""
     saved = 0
     skipped = 0
     errors = 0
+    skipped_no_triggers = 0
     async with AsyncSessionLocal() as session:
         try:
             for record in records:
                 try:
                     lead_data = _build_lead_from_record(record, source)
                     if not lead_data:
-                        skipped += 1
+                        skipped_no_triggers += 1
                         continue
                     existing = await session.execute(
                         select(Lead).where(Lead.external_id == lead_data["external_id"])
@@ -184,42 +194,45 @@ async def _save_leads(records: List[dict], source: str):
                     logger.error(f"Record error: {e}")
                     errors += 1
             await session.commit()
-            logger.info(f"[{source}] saved={saved} skipped={skipped} errors={errors}")
+            logger.info(f"[{source}] saved={saved} skipped={skipped} no_triggers={skipped_no_triggers} errors={errors}")
         except Exception as e:
             await session.rollback()
             logger.error(f"[{source}] DB commit failed: {e}")
-    return saved
+            raise
+    return {"saved": saved, "skipped": skipped, "skipped_no_triggers": skipped_no_triggers, "errors": errors}
 
 
-async def _run_openfda_ingestion():
+async def _run_openfda_ingestion() -> dict:
     try:
         from app.connectors.openfda import OpenFDAConnector
         logger.info("openFDA: starting...")
         connector = OpenFDAConnector()
-        loop = asyncio.get_event_loop()
-        records = await loop.run_in_executor(None, lambda: connector.ingest_all(limit_per_type=100))
+        records = await asyncio.to_thread(connector.ingest_all, 100)
         logger.info(f"openFDA: fetched {len(records)} records")
-        saved = await _save_leads(records, "openfda")
-        logger.info(f"openFDA: done, saved={saved}")
+        stats = await _save_leads(records, "openfda")
+        logger.info(f"openFDA: done, stats={stats}")
+        return {"fetched": len(records), **stats}
     except Exception as e:
-        logger.error(f"openFDA error: {e}")
+        logger.error(f"openFDA error: {e}", exc_info=True)
+        return {"error": str(e)}
 
 
-async def _run_epa_ingestion():
+async def _run_epa_ingestion() -> dict:
     try:
         from app.connectors.epa_echo import EPAECHOConnector
         logger.info("EPA ECHO: starting...")
         connector = EPAECHOConnector()
-        loop = asyncio.get_event_loop()
-        records = await loop.run_in_executor(None, lambda: connector.ingest_all(limit_per_state=50))
+        records = await asyncio.to_thread(connector.ingest_all, 50)
         logger.info(f"EPA ECHO: fetched {len(records)} records")
-        saved = await _save_leads(records, "epa_echo")
-        logger.info(f"EPA ECHO: done, saved={saved}")
+        stats = await _save_leads(records, "epa_echo")
+        logger.info(f"EPA ECHO: done, stats={stats}")
+        return {"fetched": len(records), **stats}
     except Exception as e:
-        logger.error(f"EPA ECHO error: {e}")
+        logger.error(f"EPA ECHO error: {e}", exc_info=True)
+        return {"error": str(e)}
 
 
-async def _run_sec_ingestion():
+async def _run_sec_ingestion() -> dict:
     try:
         from app.connectors.sec_edgar import SECEDGARConnector
         logger.info("SEC EDGAR: starting...")
@@ -237,36 +250,36 @@ async def _run_sec_ingestion():
             "0000021344",  # Coca-Cola
         ]
         all_records = []
-        loop = asyncio.get_event_loop()
         for cik in sample_ciks:
             try:
-                records = await loop.run_in_executor(
-                    None, lambda c=cik: connector.ingest_filings_for_cik(c)
-                )
+                records = await asyncio.to_thread(connector.ingest_filings_for_cik, cik)
                 if records:
                     all_records.extend(records)
                 await asyncio.sleep(0.5)
             except Exception as e:
                 logger.error(f"SEC CIK {cik} error: {e}")
         logger.info(f"SEC EDGAR: fetched {len(all_records)} total records")
-        saved = await _save_leads(all_records, "sec_edgar")
-        logger.info(f"SEC EDGAR: done, saved={saved}")
+        stats = await _save_leads(all_records, "sec_edgar")
+        logger.info(f"SEC EDGAR: done, stats={stats}")
+        return {"fetched": len(all_records), **stats}
     except Exception as e:
-        logger.error(f"SEC EDGAR error: {e}")
+        logger.error(f"SEC EDGAR error: {e}", exc_info=True)
+        return {"error": str(e)}
 
 
 async def _run_background_ingestion(source: str):
     _running_jobs[source] = {"status": "running", "started_at": datetime.utcnow().isoformat()}
     try:
         if source == "openfda":
-            await _run_openfda_ingestion()
+            result = await _run_openfda_ingestion()
         elif source == "epa_echo":
-            await _run_epa_ingestion()
+            result = await _run_epa_ingestion()
         elif source == "sec_edgar":
-            await _run_sec_ingestion()
+            result = await _run_sec_ingestion()
         else:
             logger.warning(f"Unknown source: {source}")
-        _running_jobs[source] = {"status": "completed", "completed_at": datetime.utcnow().isoformat()}
+            result = {}
+        _running_jobs[source] = {"status": "completed", "completed_at": datetime.utcnow().isoformat(), **result}
     except Exception as e:
         logger.error(f"Ingestion job {source} failed: {e}")
         _running_jobs[source] = {"status": "failed", "error": str(e)}
@@ -293,6 +306,50 @@ async def trigger_all_ingestion(background_tasks: BackgroundTasks):
     for s in sources:
         background_tasks.add_task(_run_background_ingestion, s)
     return {"status": "started", "sources": sources, "message": "All ingestion jobs started in background"}
+
+
+@router.post("/debug-run/{source}")
+async def debug_run_ingestion(source: str):
+    """Run ingestion synchronously and return detailed stats (for debugging)."""
+    valid = ["openfda", "epa_echo", "sec_edgar"]
+    if source not in valid:
+        raise HTTPException(400, detail=f"Unknown source. Valid: {valid}")
+    if source == "openfda":
+        result = await _run_openfda_ingestion()
+    elif source == "epa_echo":
+        result = await _run_epa_ingestion()
+    elif source == "sec_edgar":
+        result = await _run_sec_ingestion()
+    else:
+        result = {}
+    return {"source": source, "result": result}
+
+
+@router.post("/test-save")
+async def test_save_lead():
+    """Test direct DB save (for debugging)."""
+    try:
+        async with AsyncSessionLocal() as session:
+            test_lead = Lead(
+                org_name="Test Organization Inc",
+                source="test",
+                trigger_categories=["TEST_TRIGGER"],
+                forced_spend_categories=["Compliance", "Risk Management"],
+                opportunity_score=50,
+                severity="medium",
+                sales_angle="Test lead for debugging.",
+                why_now="Testing DB write.",
+                buyer_segments=["Compliance Consultants"],
+                external_id=f"test_{datetime.utcnow().isoformat()}",
+                created_at=datetime.utcnow(),
+            )
+            session.add(test_lead)
+            await session.commit()
+            await session.refresh(test_lead)
+            return {"status": "success", "lead_id": test_lead.id, "message": "Test lead saved successfully"}
+    except Exception as e:
+        logger.error(f"Test save failed: {e}", exc_info=True)
+        return {"status": "error", "error": str(e)}
 
 
 @router.get("/status")
