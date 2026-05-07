@@ -18,6 +18,32 @@ class RawRecord(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class Organization(Base):
+    __tablename__ = "organizations"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String, nullable=False, index=True)
+    normalized_name = Column(String, index=True)
+    industry = Column(String)
+    cik = Column(String, index=True)
+    uei = Column(String, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Trigger(Base):
+    __tablename__ = "triggers"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source = Column(String, nullable=False, index=True)
+    external_id = Column(String, index=True)
+    category = Column(String, index=True)
+    severity = Column(Integer, default=0)
+    description = Column(Text)
+    evidence_text = Column(Text)
+    forced_spend_categories = Column(JSONB, default=list)
+    extracted_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Lead(Base):
     __tablename__ = "leads"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
