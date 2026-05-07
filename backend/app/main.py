@@ -1,16 +1,24 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import logging
 
 from app.db import engine, Base
 from app.routers import leads, ingestion, search, auth, triggers, organizations
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create tables on startup
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Drop and recreate all tables to apply schema changes
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Database tables recreated successfully")
+    except Exception as e:
+        logger.error(f"DB init error: {e}")
     yield
 
 
